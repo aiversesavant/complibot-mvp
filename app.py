@@ -6,7 +6,7 @@ st.set_page_config(page_title="CompliBot MVP", page_icon="📋", layout="wide")
 
 st.title("📋 CompliBot MVP")
 st.markdown(
-    "Upload SOP, quality, and compliance PDFs. Ask grounded questions and get citation-backed answers."
+    "Upload SOP, quality, and compliance PDFs. Ask grounded questions and get structured compliance answers."
 )
 
 if "pipeline" not in st.session_state:
@@ -86,12 +86,22 @@ with col1:
         elif not user_question.strip():
             st.warning("Please enter a question.")
         else:
-            with st.spinner("Retrieving answer from compliance documents..."):
+            with st.spinner("Retrieving structured answer from compliance documents..."):
                 retrieved = pipeline.retrieve_relevant_chunks(user_question, top_k=4)
                 result = pipeline.synthesize_answer(user_question, retrieved)
 
             st.markdown("## Answer Summary")
-            st.write(result["answer"])
+            st.write(result["answer_summary"])
+
+            st.markdown("## Procedure / Guidance")
+            st.write(result["procedure_guidance"])
+
+            st.markdown("## Key Requirements")
+            if result["key_requirements"]:
+                for item in result["key_requirements"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("No explicit key requirements identified.")
 
             st.markdown("## Primary Source")
             st.info(result["source"])

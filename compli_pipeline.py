@@ -326,38 +326,17 @@ class CompliBotPipeline:
         question_type = self.classify_question(question)
 
         if not retrieved_chunks:
-            return {
-                "question_type": question_type,
-                "answer": "No relevant content was retrieved from the indexed compliance documents for this question.",
-                "source": "No source found",
-                "evidence": [],
-                "compliance_note": (
-                    "No document-grounded answer could be generated. "
-                    "Please verify that relevant SOP or compliance content has been uploaded."
-                )
-            }
+            return self._not_grounded_response(question_type, no_retrieval=True)
 
         grounding = self.evaluate_grounding(question, retrieved_chunks)
 
         if grounding["status"] == "not_grounded":
-            return {
-                "question_type": question_type,
-                "answer": (
-                    "This question does not appear to be sufficiently grounded in the uploaded compliance documents. "
-                    "Please ask a document-based question about procedures, deviations, CAPA, approvals, training, "
-                    "quality events, or related compliance content."
-                ),
-                "source": "No grounded source found",
-                "evidence": [],
-                "compliance_note": (
-                    "The current retrieval results do not provide enough support for a reliable document-grounded answer."
-                )
-            }
+            return self._not_grounded_response(question_type, no_retrieval=False)
 
         clustered_chunks = self._prefer_primary_source_cluster(retrieved_chunks)
         primary = clustered_chunks[0]
-        answer = self._build_professional_answer(question, clustered_chunks, grounding["status"])
-        evidence = self._build_evidence_snippets(question, clustered_chunks)
+
+        structured = self._build_structured_answer(question, clustered_chunks, grounding["status"])
 
         compliance_note = (
             "This answer is based on the top retrieved content from the uploaded compliance documents "
@@ -369,12 +348,31 @@ class CompliBotPipeline:
                 "against approved internal procedures before operational use."
             )
 
+        structured["question_type"] = question_type
+        structured["source"] = f"{primary['source']} (chunk {primary['chunk_index']})"
+        structured["compliance_note"] = compliance_note
+        return structured
+
+    def _not_grounded_response(self, question_type: str, no_retrieval: bool = False) -> Dict:
+        if no_retrieval:
+            answer = "No relevant content was retrieved from the indexed compliance documents for this question."
+            note = "No document-grounded answer could be generated. Please verify that relevant SOP or compliance content has been uploaded."
+        else:
+            answer = (
+                "This question does not appear to be sufficiently grounded in the uploaded compliance documents. "
+                "Please ask a document-based question about procedures, deviations, CAPA, approvals, training, "
+                "quality events, or related compliance content."
+            )
+            note = "The current retrieval results do not provide enough support for a reliable document-grounded answer."
+
         return {
             "question_type": question_type,
-            "answer": answer,
-            "source": f"{primary['source']} (chunk {primary['chunk_index']})",
-            "evidence": evidence,
-            "compliance_note": compliance_note
+            "answer_summary": answer,
+            "procedure_guidance": "No procedure guidance available.",
+            "key_requirements": [],
+            "evidence": [],
+            "source": "No grounded source found",
+            "compliance_note": note
         }
 
     def _prefer_primary_source_cluster(self, retrieved_chunks: List[Dict]) -> List[Dict]:
@@ -448,57 +446,64 @@ class CompliBotPipeline:
 
         return {"status": "not_grounded", "reason": "weak_match"}
 
-    def _build_professional_answer(self, question: str, retrieved_chunks: List[Dict], grounding_status: str) -> str:
+    def _build_structured_answer(self, question: str, retrieved_chunks: List[Dict], grounding_status: str) -> Dict:
         top_text = " ".join(chunk["text"] for chunk in retrieved_chunks[:3])
         sentences = self.split_into_sentences(top_text)
 
         if not sentences:
-            return "Relevant content was retrieved, but a clean answer could not be generated from the available text."
+            return {
+                "answer_summary": "Relevant content was retrieved, but a clean structured answer could not be generated.",
+                "procedure_guidance": "No clear procedural guidance could be synthesized.",
+                "key_requirements": [],
+                "evidence": []
+            }
 
         qtype = self.classify_question(question)
-        selected = self._select_relevant_sentences(question, sentences, max_sentences=3, question_type=qtype)
-        if not selected:
-            selected = sentences[:2]
 
-        cleaned_sentences = []
-        for sentence in selected:
-            sentence = self._strip_section_labels(sentence)
-            sentence = self._remove_filename_noise(sentence)
-            sentence = self._normalize_sentence_text(sentence, ensure_period=True)
-            if not self._is_sentence_fragment(sentence):
-                cleaned_sentences.append(sentence)
+        summary_sentences = self._select_relevant_sentences(
+            question, sentences, max_sentences=2, question_type=qtype
+        )
+        if not summary_sentences:
+            summary_sentences = sentences[:2]
 
-        if not cleaned_sentences:
-            cleaned_sentences = [
-                self._normalize_sentence_text(
-                    self._remove_filename_noise(self._strip_section_labels(s)),
-                    ensure_period=True
-                )
-                for s in selected[:1]
-            ]
+        procedure_sentences = self._select_procedure_sentences(sentences)
+        requirement_sentences = self._select_requirement_sentences(sentences)
 
-        if qtype in {"Definition", "Procedure"}:
-            cleaned_sentences = cleaned_sentences[:2]
+        cleaned_summary = self._clean_sentence_list(summary_sentences)[:2]
+        cleaned_procedure = self._clean_sentence_list(procedure_sentences)[:2]
+        cleaned_requirements = self._clean_sentence_list(requirement_sentences)[:3]
 
-        answer_body = " ".join(cleaned_sentences).strip()
-        answer_body = self._trim_text(answer_body, 520)
-        answer_body = self._lowercase_first(answer_body)
+        if not cleaned_procedure and cleaned_summary:
+            cleaned_procedure = cleaned_summary[:1]
 
-        q_lower = question.lower()
-
-        if any(word in q_lower for word in ["what is", "define", "meaning", "mean"]):
-            prefix = "The retrieved document content indicates that "
-        elif any(word in q_lower for word in ["process", "procedure", "how", "steps"]):
-            prefix = "Based on the retrieved SOP content, the process appears to be as follows: "
-        elif any(word in q_lower for word in ["deviation", "capa", "review", "approval", "training"]):
-            prefix = "The SOP indicates that "
-        else:
-            prefix = "Based on the retrieved compliance content, "
+        answer_summary = " ".join(cleaned_summary).strip()
+        procedure_guidance = " ".join(cleaned_procedure).strip() if cleaned_procedure else "No explicit procedural guidance was identified."
+        key_requirements = cleaned_requirements
 
         if grounding_status == "weakly_grounded":
-            prefix = "The retrieved content suggests that "
+            if answer_summary:
+                answer_summary = "The retrieved content suggests that " + self._lowercase_first(answer_summary)
+        else:
+            q_lower = question.lower()
+            if any(word in q_lower for word in ["deviation", "capa", "review", "approval", "training"]):
+                answer_summary = "The SOP indicates that " + self._lowercase_first(answer_summary)
+            elif any(word in q_lower for word in ["process", "procedure", "how", "steps"]):
+                answer_summary = "Based on the retrieved SOP content, " + self._lowercase_first(answer_summary)
+            elif any(word in q_lower for word in ["what is", "define", "meaning", "mean"]):
+                answer_summary = "The retrieved document content indicates that " + self._lowercase_first(answer_summary)
+            else:
+                answer_summary = "Based on the retrieved compliance content, " + self._lowercase_first(answer_summary)
 
-        return prefix + answer_body
+        answer_summary = self._trim_text(answer_summary, 520)
+
+        evidence = self._build_evidence_snippets(question, retrieved_chunks)
+
+        return {
+            "answer_summary": answer_summary,
+            "procedure_guidance": procedure_guidance,
+            "key_requirements": key_requirements,
+            "evidence": evidence
+        }
 
     def _build_evidence_snippets(self, question: str, retrieved_chunks: List[Dict]) -> List[Dict]:
         evidence = []
@@ -511,14 +516,7 @@ class CompliBotPipeline:
             if not selected and sentences:
                 selected = [sentences[0]]
 
-            cleaned = []
-            for sentence in selected:
-                sentence = self._strip_section_labels(sentence)
-                sentence = self._remove_filename_noise(sentence)
-                sentence = self._normalize_sentence_text(sentence, ensure_period=True)
-                if not self._is_sentence_fragment(sentence):
-                    cleaned.append(sentence)
-
+            cleaned = self._clean_sentence_list(selected)
             if not cleaned:
                 continue
 
@@ -589,6 +587,50 @@ class CompliBotPipeline:
             )
 
         return selected
+
+    def _select_procedure_sentences(self, sentences: List[str]) -> List[str]:
+        picked = []
+        for sentence in sentences:
+            s = sentence.lower()
+            if any(term in s for term in [
+                "procedure", "process", "step", "review", "approval",
+                "verification", "report", "investigation", "closure"
+            ]):
+                picked.append(sentence)
+            if len(picked) == 3:
+                break
+        return picked
+
+    def _select_requirement_sentences(self, sentences: List[str]) -> List[str]:
+        picked = []
+        for sentence in sentences:
+            s = sentence.lower()
+            if any(term in s for term in [
+                "must", "shall", "required", "should", "approved",
+                "report", "verify", "document", "effective date"
+            ]):
+                picked.append(sentence)
+            if len(picked) == 4:
+                break
+        return picked
+
+    def _clean_sentence_list(self, sentences: List[str]) -> List[str]:
+        cleaned = []
+        seen = set()
+
+        for sentence in sentences:
+            sentence = self._strip_section_labels(sentence)
+            sentence = self._remove_filename_noise(sentence)
+            sentence = self._normalize_sentence_text(sentence, ensure_period=True)
+
+            if self._is_sentence_fragment(sentence):
+                continue
+
+            if sentence not in seen:
+                seen.add(sentence)
+                cleaned.append(sentence)
+
+        return cleaned
 
     def _strip_section_labels(self, text: str) -> str:
         labels_pattern = "|".join(re.escape(label) for label in INLINE_SECTION_LABELS)
