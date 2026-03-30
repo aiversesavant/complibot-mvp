@@ -243,7 +243,7 @@ class CompliBotPipeline:
             return "sop"
 
         if any(term in q for term in [
-            "guideline", "regulatory", "fda", "ich", "gcp", "gVp".lower()
+            "guideline", "regulatory", "fda", "ich", "gcp", "gvp"
         ]):
             return "guideline"
 
@@ -252,12 +252,14 @@ class CompliBotPipeline:
     def retrieve_relevant_chunks(self, query: str, top_k: int = 4) -> List[Dict]:
         preferred_group = self.infer_question_doc_preference(query)
 
-        primary_results = self._query_collection(query, top_k=top_k * 2, doc_group=preferred_group if preferred_group != "any" else None)
+        primary_results = self._query_collection(
+            query,
+            top_k=top_k * 2,
+            doc_group=preferred_group if preferred_group != "any" else None
+        )
 
-        # If preferred-group retrieval is weak or empty, broaden search
         if len(primary_results) < 2:
-            fallback_results = self._query_collection(query, top_k=top_k * 2, doc_group=None)
-            primary_results = fallback_results
+            primary_results = self._query_collection(query, top_k=top_k * 2, doc_group=None)
 
         reranked = self._rerank_results(query, primary_results)
         return reranked[:top_k]
@@ -304,17 +306,14 @@ class CompliBotPipeline:
 
         reranked = []
         for r in results:
-            score = r["distance"]  # lower is better
+            score = r["distance"]
 
-            # Prefer question-matching doc group
             if preferred_group != "any" and r["doc_group"] == preferred_group:
                 score -= 0.15
 
-            # Prefer sources that appear multiple times in retrieved set
             if source_counts.get(r["source"], 0) >= 2:
                 score -= 0.08
 
-            # Slight penalty for guideline docs in SOP-like questions
             if preferred_group == "sop" and r["doc_group"] == "guideline":
                 score += 0.12
 
@@ -386,9 +385,13 @@ class CompliBotPipeline:
         for r in retrieved_chunks:
             source_counts[r["source"]] = source_counts.get(r["source"], 0) + 1
 
-        primary_source = max(source_counts.items(), key=lambda x: (x[1], -min(
-            [c["distance"] for c in retrieved_chunks if c["source"] == x[0]]
-        )))[0]
+        primary_source = max(
+            source_counts.items(),
+            key=lambda x: (
+                x[1],
+                -min([c["distance"] for c in retrieved_chunks if c["source"] == x[0]])
+            )
+        )[0]
 
         primary_chunks = [r for r in retrieved_chunks if r["source"] == primary_source]
         other_chunks = [r for r in retrieved_chunks if r["source"] != primary_source]
