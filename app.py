@@ -5,7 +5,9 @@ from compli_pipeline import CompliBotPipeline
 st.set_page_config(page_title="CompliBot MVP", page_icon="📋", layout="wide")
 
 st.title("📋 CompliBot MVP")
-st.markdown("Upload SOP, quality, and compliance PDFs. Ask grounded questions and get citation-backed answers.")
+st.markdown(
+    "Upload SOP, quality, and compliance PDFs. Ask grounded questions and get citation-backed answers."
+)
 
 if "pipeline" not in st.session_state:
     st.session_state.pipeline = CompliBotPipeline()
@@ -88,10 +90,10 @@ with col1:
                 retrieved = pipeline.retrieve_relevant_chunks(user_question, top_k=4)
                 result = pipeline.synthesize_answer(user_question, retrieved)
 
-            st.markdown("## Answer")
+            st.markdown("## Answer Summary")
             st.write(result["answer"])
 
-            st.markdown("## Source")
+            st.markdown("## Primary Source")
             st.info(result["source"])
 
             st.markdown("## Supporting Evidence")
@@ -105,7 +107,7 @@ with col1:
             else:
                 st.write("No evidence available.")
 
-            st.markdown("## Compliance Note")
+            st.markdown("## Compliance Interpretation Note")
             st.warning(result["compliance_note"])
 
             st.markdown("## Debug Info")
@@ -113,7 +115,9 @@ with col1:
             if retrieved:
                 st.write("Top retrieved sources:")
                 for r in retrieved:
-                    st.write(f"- {r['source']} | chunk {r['chunk_index']} | distance={r['distance']:.4f}")
+                    st.write(
+                        f"- {r['source']} | chunk {r['chunk_index']} | group={r.get('doc_group', 'n/a')} | distance={r['distance']:.4f}"
+                    )
 
 with col2:
     st.subheader("Question Context")
