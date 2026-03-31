@@ -1,11 +1,11 @@
 import os
 import re
 import uuid
-from typing import List, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import chromadb
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
-import chromadb
 
 
 CHROMA_DIR = "chroma_store"
@@ -16,7 +16,7 @@ DOMAIN_TERMS = {
     "sop", "procedure", "process", "policy", "deviation", "deviations",
     "capa", "approval", "review", "training", "quality", "document",
     "documents", "triage", "adverse", "event", "verification", "audit",
-    "compliance", "nonconformity", "non-conformity", "qa", "gxp"
+    "compliance", "nonconformity", "non-conformity", "qa", "gxp",
 }
 
 INLINE_SECTION_LABELS = [
@@ -25,7 +25,20 @@ INLINE_SECTION_LABELS = [
     "Approval", "Review", "Definitions", "Records", "References",
     "Corrective Action", "Preventive Action", "CAPA", "Deviation",
     "Training", "Drafting", "Initiation", "Investigation", "Closure",
-    "Version Control", "Technical Review", "Quality Review", "Final Sign-off"
+    "Version Control", "Technical Review", "Quality Review", "Final Sign-off",
+]
+
+CASUAL_CHAT_PATTERNS = [
+    "how are you",
+    "who are you",
+    "what is your name",
+    "tell me a joke",
+    "hello",
+    "hi",
+    "good morning",
+    "good evening",
+    "good afternoon",
+    "what's up",
 ]
 
 
@@ -35,7 +48,7 @@ class CompliBotPipeline:
         self.embedder = SentenceTransformer(EMBED_MODEL_NAME)
         self.collection = self.client.get_or_create_collection(name=COLLECTION_NAME)
 
-    def reset_collection(self):
+    def reset_collection(self) -> None:
         try:
             self.client.delete_collection(COLLECTION_NAME)
         except Exception:
@@ -51,9 +64,11 @@ class CompliBotPipeline:
     def extract_text_from_pdf(self, pdf_path: str) -> str:
         reader = PdfReader(pdf_path)
         pages = []
+
         for page in reader.pages:
             text = page.extract_text() or ""
             pages.append(text)
+
         return "\n".join(pages)
 
     def clean_text(self, text: str) -> str:
@@ -101,16 +116,13 @@ class CompliBotPipeline:
             rf"\s+(?=({labels_pattern})\s*:)",
             "\n\n",
             normalized,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
 
         parts = re.split(r"\n\s*\n", normalized)
         parts = [p.strip() for p in parts if len(p.strip()) > 30]
 
-        if not parts:
-            return [normalized]
-
-        return parts
+        return parts if parts else [normalized]
 
     def chunk_text(self, text: str, chunk_size: int = 700, overlap_sentences: int = 1) -> List[str]:
         sections = self.split_into_sections(text)
@@ -132,7 +144,7 @@ class CompliBotPipeline:
             if not sentences:
                 continue
 
-            current = []
+            current: List[str] = []
             current_len = 0
 
             for sentence in sentences:
@@ -200,7 +212,7 @@ class CompliBotPipeline:
                 {
                     "source": uploaded_file.name,
                     "chunk_index": i,
-                    "doc_group": doc_group
+                    "doc_group": doc_group,
                 }
                 for i in range(len(chunks))
             ]
@@ -209,7 +221,7 @@ class CompliBotPipeline:
                 ids=ids,
                 documents=chunks,
                 embeddings=embeddings,
-                metadatas=metadatas
+                metadatas=metadatas,
             )
 
             processed_docs.append(uploaded_file.name)
@@ -238,12 +250,12 @@ class CompliBotPipeline:
 
         if any(term in q for term in [
             "sop", "deviation", "capa", "approval process",
-            "review process", "triage process", "document review"
+            "review process", "triage process", "document review",
         ]):
             return "sop"
 
         if any(term in q for term in [
-            "guideline", "regulatory", "fda", "ich", "gcp", "gvp"
+            "guideline", "regulatory", "fda", "ich", "gcp", "gvp",
         ]):
             return "guideline"
 
@@ -255,7 +267,7 @@ class CompliBotPipeline:
         primary_results = self._query_collection(
             query,
             top_k=top_k * 2,
-            doc_group=preferred_group if preferred_group != "any" else None
+            doc_group=preferred_group if preferred_group != "any" else None,
         )
 
         if len(primary_results) < 2:
@@ -264,13 +276,13 @@ class CompliBotPipeline:
         reranked = self._rerank_results(query, primary_results)
         return reranked[:top_k]
 
-    def _query_collection(self, query: str, top_k: int = 8, doc_group: str = None) -> List[Dict]:
+    def _query_collection(self, query: str, top_k: int = 8, doc_group: Optional[str] = None) -> List[Dict]:
         query_embedding = self.embedder.encode([query]).tolist()[0]
 
         kwargs = {
             "query_embeddings": [query_embedding],
             "n_results": top_k,
-            "include": ["documents", "metadatas", "distances"]
+            "include": ["documents", "metadatas", "distances"],
         }
 
         if doc_group:
@@ -284,13 +296,15 @@ class CompliBotPipeline:
 
         retrieved = []
         for doc, meta, dist in zip(docs, metas, distances):
-            retrieved.append({
-                "text": self._clean_snippet(doc),
-                "source": meta.get("source", "Unknown"),
-                "chunk_index": meta.get("chunk_index", -1),
-                "doc_group": meta.get("doc_group", "general"),
-                "distance": dist
-            })
+            retrieved.append(
+                {
+                    "text": self._clean_snippet(doc),
+                    "source": meta.get("source", "Unknown"),
+                    "chunk_index": meta.get("chunk_index", -1),
+                    "doc_group": meta.get("doc_group", "general"),
+                    "distance": dist,
+                }
+            )
 
         return retrieved
 
@@ -300,7 +314,7 @@ class CompliBotPipeline:
 
         preferred_group = self.infer_question_doc_preference(question)
 
-        source_counts = {}
+        source_counts: Dict[str, int] = {}
         for r in results:
             source_counts[r["source"]] = source_counts.get(r["source"], 0) + 1
 
@@ -356,7 +370,10 @@ class CompliBotPipeline:
     def _not_grounded_response(self, question_type: str, no_retrieval: bool = False) -> Dict:
         if no_retrieval:
             answer = "No relevant content was retrieved from the indexed compliance documents for this question."
-            note = "No document-grounded answer could be generated. Please verify that relevant SOP or compliance content has been uploaded."
+            note = (
+                "No document-grounded answer could be generated. "
+                "Please verify that relevant SOP or compliance content has been uploaded."
+            )
         else:
             answer = (
                 "This question does not appear to be sufficiently grounded in the uploaded compliance documents. "
@@ -372,14 +389,14 @@ class CompliBotPipeline:
             "key_requirements": [],
             "evidence": [],
             "source": "No grounded source found",
-            "compliance_note": note
+            "compliance_note": note,
         }
 
     def _prefer_primary_source_cluster(self, retrieved_chunks: List[Dict]) -> List[Dict]:
         if not retrieved_chunks:
             return []
 
-        source_counts = {}
+        source_counts: Dict[str, int] = {}
         for r in retrieved_chunks:
             source_counts[r["source"]] = source_counts.get(r["source"], 0) + 1
 
@@ -387,8 +404,8 @@ class CompliBotPipeline:
             source_counts.items(),
             key=lambda x: (
                 x[1],
-                -min([c["distance"] for c in retrieved_chunks if c["source"] == x[0]])
-            )
+                -min([c["distance"] for c in retrieved_chunks if c["source"] == x[0]]),
+            ),
         )[0]
 
         primary_chunks = [r for r in retrieved_chunks if r["source"] == primary_source]
@@ -405,11 +422,7 @@ class CompliBotPipeline:
 
         q_lower = question.lower().strip()
 
-        obvious_chat_patterns = [
-            "how are you", "who are you", "what is your name", "tell me a joke",
-            "hello", "hi", "good morning", "good evening", "good afternoon", "what's up"
-        ]
-        if any(pattern in q_lower for pattern in obvious_chat_patterns):
+        if any(pattern in q_lower for pattern in CASUAL_CHAT_PATTERNS):
             return {"status": "not_grounded", "reason": "casual_chat"}
 
         q_words = {
@@ -455,13 +468,16 @@ class CompliBotPipeline:
                 "answer_summary": "Relevant content was retrieved, but a clean structured answer could not be generated.",
                 "procedure_guidance": "No clear procedural guidance could be synthesized.",
                 "key_requirements": [],
-                "evidence": []
+                "evidence": [],
             }
 
         qtype = self.classify_question(question)
 
         summary_sentences = self._select_relevant_sentences(
-            question, sentences, max_sentences=2, question_type=qtype
+            question,
+            sentences,
+            max_sentences=2,
+            question_type=qtype,
         )
         if not summary_sentences:
             summary_sentences = sentences[:2]
@@ -477,7 +493,11 @@ class CompliBotPipeline:
             cleaned_procedure = cleaned_summary[:1]
 
         answer_summary = " ".join(cleaned_summary).strip()
-        procedure_guidance = " ".join(cleaned_procedure).strip() if cleaned_procedure else "No explicit procedural guidance was identified."
+        procedure_guidance = (
+            " ".join(cleaned_procedure).strip()
+            if cleaned_procedure
+            else "No explicit procedural guidance was identified."
+        )
         key_requirements = cleaned_requirements
 
         if grounding_status == "weakly_grounded":
@@ -495,14 +515,13 @@ class CompliBotPipeline:
                 answer_summary = "Based on the retrieved compliance content, " + self._lowercase_first(answer_summary)
 
         answer_summary = self._trim_text(answer_summary, 520)
-
         evidence = self._build_evidence_snippets(question, retrieved_chunks)
 
         return {
             "answer_summary": answer_summary,
             "procedure_guidance": procedure_guidance,
             "key_requirements": key_requirements,
-            "evidence": evidence
+            "evidence": evidence,
         }
 
     def _build_evidence_snippets(self, question: str, retrieved_chunks: List[Dict]) -> List[Dict]:
@@ -512,7 +531,12 @@ class CompliBotPipeline:
 
         for item in retrieved_chunks[:3]:
             sentences = self.split_into_sentences(item["text"])
-            selected = self._select_relevant_sentences(question, sentences, max_sentences=2, question_type=qtype)
+            selected = self._select_relevant_sentences(
+                question,
+                sentences,
+                max_sentences=2,
+                question_type=qtype,
+            )
             if not selected and sentences:
                 selected = [sentences[0]]
 
@@ -525,12 +549,14 @@ class CompliBotPipeline:
 
             if snippet not in seen_texts:
                 seen_texts.add(snippet)
-                evidence.append({
-                    "source": item["source"],
-                    "chunk_index": item["chunk_index"],
-                    "distance": item["distance"],
-                    "text": snippet
-                })
+                evidence.append(
+                    {
+                        "source": item["source"],
+                        "chunk_index": item["chunk_index"],
+                        "distance": item["distance"],
+                        "text": snippet,
+                    }
+                )
 
         return evidence
 
@@ -539,7 +565,7 @@ class CompliBotPipeline:
         question: str,
         sentences: List[str],
         max_sentences: int = 2,
-        question_type: str = "General Compliance Question"
+        question_type: str = "General Compliance Question",
     ) -> List[str]:
         q_words = {
             w for w in re.findall(r"\w+", question.lower())
@@ -582,8 +608,8 @@ class CompliBotPipeline:
                 selected,
                 key=lambda s: (
                     0 if any(k in s.lower() for k in ["objective", "purpose", "scope"]) else 1,
-                    0 if len(s.split()) > 8 else 1
-                )
+                    0 if len(s.split()) > 8 else 1,
+                ),
             )
 
         return selected
@@ -594,7 +620,7 @@ class CompliBotPipeline:
             s = sentence.lower()
             if any(term in s for term in [
                 "procedure", "process", "step", "review", "approval",
-                "verification", "report", "investigation", "closure"
+                "verification", "report", "investigation", "closure",
             ]):
                 picked.append(sentence)
             if len(picked) == 3:
@@ -607,7 +633,7 @@ class CompliBotPipeline:
             s = sentence.lower()
             if any(term in s for term in [
                 "must", "shall", "required", "should", "approved",
-                "report", "verify", "document", "effective date"
+                "report", "verify", "document", "effective date",
             ]):
                 picked.append(sentence)
             if len(picked) == 4:
@@ -635,18 +661,18 @@ class CompliBotPipeline:
     def _strip_section_labels(self, text: str) -> str:
         labels_pattern = "|".join(re.escape(label) for label in INLINE_SECTION_LABELS)
         text = re.sub(
-            rf'^(?:{labels_pattern})\s*:\s*',
-            '',
+            rf"^(?:{labels_pattern})\s*:\s*",
+            "",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
         return text.strip()
 
     def _remove_filename_noise(self, text: str) -> str:
-        text = re.sub(r'\bSOP_[A-Za-z0-9_]+\b', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'\b[A-Za-z0-9_]+\.pdf\b', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bSOP[A-Za-z0-9_\-]*\b', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'\s{2,}', ' ', text)
+        text = re.sub(r"\bSOP_[A-Za-z0-9_]+\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b[A-Za-z0-9_]+\.pdf\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bSOP[A-Za-z0-9_\-]*\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s{2,}", " ", text)
         return text.strip()
 
     def _normalize_sentence_text(self, text: str, ensure_period: bool = True) -> str:

@@ -1,4 +1,5 @@
 import streamlit as st
+
 from compli_pipeline import CompliBotPipeline
 
 
@@ -30,7 +31,7 @@ with st.sidebar:
         "Upload compliance PDFs",
         type=["pdf"],
         accept_multiple_files=True,
-        key="pdf_uploader"
+        key="pdf_uploader",
     )
 
     if st.button("Reset Session"):
@@ -55,7 +56,8 @@ with st.sidebar:
             st.session_state.last_ingest_count = pipeline.count_indexed_chunks()
 
             st.success(
-                f"Ingested {len(processed_docs)} document(s). Collection now has {st.session_state.last_ingest_count} chunks."
+                f"Ingested {len(processed_docs)} document(s). "
+                f"Collection now has {st.session_state.last_ingest_count} chunks."
             )
         else:
             st.warning("Please upload at least one PDF before ingesting.")
@@ -75,7 +77,7 @@ with col1:
     user_question = st.text_area(
         "Enter your question",
         placeholder="Example: What does this SOP say about deviation handling?",
-        height=120
+        height=120,
     )
 
     ask_clicked = st.button("Get Compliance Answer")
@@ -126,7 +128,8 @@ with col1:
                 st.write("Top retrieved sources:")
                 for r in retrieved:
                     st.write(
-                        f"- {r['source']} | chunk {r['chunk_index']} | group={r.get('doc_group', 'n/a')} | distance={r['distance']:.4f}"
+                        f"- {r['source']} | chunk {r['chunk_index']} "
+                        f"| group={r.get('doc_group', 'n/a')} | distance={r['distance']:.4f}"
                     )
 
 with col2:
