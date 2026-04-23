@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import chromadb
@@ -8,7 +9,7 @@ from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
 
-CHROMA_DIR = "chroma_store"
+CHROMA_DIR = "data/runtime/vector_store/chroma_store"
 COLLECTION_NAME = "complibot_documents"
 EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -48,6 +49,9 @@ class CompliBotPipeline:
         self.embedder = SentenceTransformer(EMBED_MODEL_NAME)
         self.collection = self.client.get_or_create_collection(name=COLLECTION_NAME)
 
+    # =============================
+    # Collection helpers
+    # =============================
     def reset_collection(self) -> None:
         try:
             self.client.delete_collection(COLLECTION_NAME)
@@ -61,6 +65,9 @@ class CompliBotPipeline:
         except Exception:
             return 0
 
+    # =============================
+    # PDF processing
+    # =============================
     def extract_text_from_pdf(self, pdf_path: str) -> str:
         reader = PdfReader(pdf_path)
         pages = []
@@ -149,12 +156,14 @@ class CompliBotPipeline:
 
             for sentence in sentences:
                 s_len = len(sentence)
+
                 if current_len + s_len + 1 <= chunk_size:
                     current.append(sentence)
                     current_len += s_len + 1
                 else:
                     if current:
                         chunks.append(" ".join(current).strip())
+
                     overlap = current[-overlap_sentences:] if overlap_sentences > 0 else []
                     current = overlap + [sentence]
                     current_len = sum(len(x) + 1 for x in current)
@@ -171,6 +180,9 @@ class CompliBotPipeline:
 
         return cleaned_chunks
 
+    # =============================
+    # Metadata / ingestion
+    # =============================
     def detect_doc_group(self, filename: str) -> str:
         f = filename.lower()
 
@@ -185,21 +197,21 @@ class CompliBotPipeline:
 
         return "general"
 
-    def ingest_documents(self, uploaded_files) -> Tuple[int, List[str]]:
+    def ingest_file_paths(self, file_paths: List[str]) -> Tuple[int, List[str]]:
+        """
+        Phase 6.2 version:
+        Accepts already-saved file paths from the shared document registry.
+        """
         self.reset_collection()
-        os.makedirs("temp_uploads", exist_ok=True)
 
         total_chunks = 0
         processed_docs = []
 
-        for uploaded_file in uploaded_files:
-            temp_path = os.path.join("temp_uploads", uploaded_file.name)
-            doc_group = self.detect_doc_group(uploaded_file.name)
+        for file_path in file_paths:
+            pdf_file = Path(file_path)
+            doc_group = self.detect_doc_group(pdf_file.name)
 
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            raw_text = self.extract_text_from_pdf(temp_path)
+            raw_text = self.extract_text_from_pdf(str(pdf_file))
             cleaned = self.clean_text(raw_text)
             chunks = self.chunk_text(cleaned)
 
@@ -210,7 +222,7 @@ class CompliBotPipeline:
             ids = [str(uuid.uuid4()) for _ in chunks]
             metadatas = [
                 {
-                    "source": uploaded_file.name,
+                    "source": pdf_file.name,
                     "chunk_index": i,
                     "doc_group": doc_group,
                 }
@@ -224,11 +236,31 @@ class CompliBotPipeline:
                 metadatas=metadatas,
             )
 
-            processed_docs.append(uploaded_file.name)
+            processed_docs.append(pdf_file.name)
             total_chunks += len(chunks)
 
         return total_chunks, processed_docs
 
+    # Optional backward-compatibility wrapper
+    def ingest_documents(self, uploaded_files) -> Tuple[int, List[str]]:
+        """
+        Backward-compatible wrapper for older local app usage.
+        Can be removed later once the platform is fully unified.
+        """
+        os.makedirs("data/uploads", exist_ok=True)
+        saved_paths = []
+
+        for uploaded_file in uploaded_files:
+            temp_path = os.path.join("data/uploads", uploaded_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            saved_paths.append(temp_path)
+
+        return self.ingest_file_paths(saved_paths)
+
+    # =============================
+    # Routing / retrieval
+    # =============================
     def classify_question(self, question: str) -> str:
         q = question.lower()
 
@@ -336,6 +368,9 @@ class CompliBotPipeline:
         reranked.sort(key=lambda x: x[0])
         return [r for _, r in reranked]
 
+    # =============================
+    # Answer synthesis
+    # =============================
     def synthesize_answer(self, question: str, retrieved_chunks: List[Dict]) -> Dict:
         question_type = self.classify_question(question)
 
@@ -658,6 +693,9 @@ class CompliBotPipeline:
 
         return cleaned
 
+    # =============================
+    # Text cleanup helpers
+    # =============================
     def _strip_section_labels(self, text: str) -> str:
         labels_pattern = "|".join(re.escape(label) for label in INLINE_SECTION_LABELS)
         text = re.sub(
