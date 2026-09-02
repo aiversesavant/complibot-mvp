@@ -266,14 +266,18 @@ class CompliBotPipeline:
 
         if any(word in q for word in ["define", "what is", "meaning", "mean"]):
             return "Definition"
-        if any(word in q for word in ["step", "steps", "process", "procedure", "how"]):
-            return "Procedure"
-        if any(word in q for word in ["policy", "requirement", "required", "must", "shall"]):
-            return "Policy / Requirement"
+
         if any(word in q for word in ["training", "qualified", "qualification"]):
             return "Training"
+
         if any(word in q for word in ["escalation", "report", "notify", "deviation", "capa"]):
             return "Escalation / Quality Event"
+
+        if any(word in q for word in ["policy", "requirement", "required", "must", "shall"]):
+            return "Policy / Requirement"
+
+        if any(word in q for word in ["step", "steps", "process", "procedure", "how"]):
+            return "Procedure"
 
         return "General Compliance Question"
 
@@ -457,7 +461,10 @@ class CompliBotPipeline:
 
         q_lower = question.lower().strip()
 
-        if any(pattern in q_lower for pattern in CASUAL_CHAT_PATTERNS):
+        if any(
+            re.search(rf"(?<!\w){re.escape(pattern)}(?!\w)", q_lower)
+            for pattern in CASUAL_CHAT_PATTERNS
+        ):
             return {"status": "not_grounded", "reason": "casual_chat"}
 
         q_words = {
@@ -480,7 +487,7 @@ class CompliBotPipeline:
         if best_distance <= 1.10 and (keyword_hits >= 1 or domain_hits >= 1):
             return {"status": "strongly_grounded", "reason": "strong_match_with_overlap"}
 
-        if best_distance <= 1.25 and same_source_count >= 1 and len(q_domain_terms) >= 1:
+        if best_distance <= 1.25 and same_source_count >= 2 and len(q_domain_terms) >= 1:
             return {"status": "strongly_grounded", "reason": "strong_domain_top_match"}
 
         if best_distance <= 1.35 and domain_hits >= 1:

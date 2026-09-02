@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: complibot-mvp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Verify dependencies
+        run: python -m pip check
+
+      - name: Compile Python
+        run: python -m compileall app.py compli_pipeline.py tests
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+      - name: Run smoke checks
+        run: |
+          mkdir -p \
+            data/uploads \
+            data/runtime/vector_store
+          bash scripts/smoke_test.sh
